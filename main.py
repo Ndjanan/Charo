@@ -1,5 +1,12 @@
+import os
+import time
+import logging
 from datetime import datetime
+import seaborn as sns
+from tpqoa.tpqoa import tpqoa
+from news_sentiment import get_deepseek_recommendation_for_bot
 
+# Import des stratégies
 from livetrading.BollingerBandsLive import BollingerBandsLive
 from livetrading.ContrarianLive import ContrarianLive
 from livetrading.MLClassificationLive import MLClassificationLive
@@ -11,296 +18,163 @@ from backtesting.BollingerBandsBacktest import BollingerBandsBacktest
 from backtesting.MomentumBacktest import MomentumBacktest
 from backtesting.SMABacktest import SMABacktest
 from backtesting.MLClassificationBacktest import MLClassificationBacktest
-import seaborn as sns
-from tpqoa.tpqoa import tpqoa
-from news_sentiment import get_deepseek_recommendation_for_bot
 
+#############################################
+# CONFIGURATION VIA VARIABLES D'ENVIRONNEMENT
+#############################################
 
-if __name__ == "__main__":
+MODE = os.getenv("MODE", "live")  # "live" ou "backtest"
+STRATEGY = os.getenv("STRATEGY", "sma")
+INSTRUMENT = os.getenv("INSTRUMENT", "EUR/USD")
+GRANULARITY = os.getenv("GRANULARITY", "1H")
+UNITS = int(os.getenv("UNITS", 100000))
+STOP_PROFIT = os.getenv("STOP_PROFIT", None)
+STOP_LOSS = os.getenv("STOP_LOSS", None)
+LIVE_INTERVAL = int(os.getenv("LIVE_INTERVAL", 300))  # secondes entre chaque tick
 
-    while True:
+# Pour Backtest
+START_DATE = os.getenv("START_DATE", "2024-01-01")
+END_DATE = os.getenv("END_DATE", "2024-12-31")
+TRADING_COST = float(os.getenv("TRADING_COST", 0.00007))
 
-        # step 1 ensure they have this
-        cfg = "oanda.cfg"
+# SMA
+SMAS = int(os.getenv("SMAS", 9))
+SMAL = int(os.getenv("SMAL", 20))
 
-        # step 1.5 open oanda connection
-        oanda = tpqoa(cfg)
-        # step 2 decide instrument
+# Bollinger Bands
+SMA = int(os.getenv("SMA", 9))
+DEVIATION = int(os.getenv("DEVIATION", 2))
 
-        print("Enter an instrument to trade (index or pair name): \n")
-        choices = []
-        
-        for index, instrument in enumerate(oanda.get_instruments()):
-            temp = instrument[1]
-            choices.append(temp)
-            print(f"({index}: {temp})", end=", ")
+# Momentum / Contrarian
+WINDOW = int(os.getenv("WINDOW", 3))
 
-        print("")
+# ML
+LAGS = int(os.getenv("LAGS", 6))
 
-        choice = input("\n")
-        
-        while True:
-            if choice not in choices:
-                
-                try:
-                    val = int(choice)
-                    if val < len(choices) and val >= 0:
-                        choice = choices[val]
-                        break
-                except:
-                    pass
+CFG = os.getenv("OANDA_CFG", "oanda.cfg")
 
-                choice = input("Please choose an instrument from the list above: ")
-            else:
-                break
+#############################################
+# LOGGING
+#############################################
+logging.basicConfig(
+    filename="trading.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
-        instrument = choice
-        
-        print(f"Instrument: {instrument}") 
+#############################################
+# FONCTION POUR INITIALISER LE TRADER
+#############################################
+def init_trader():
+    try:
+        oanda = tpqoa(CFG)
+        logging.info(f"Connexion OANDA réussie pour {INSTRUMENT}")
+    except Exception as e:
+        logging.error(f"Erreur connexion OANDA : {e}")
+        raise
 
-        # step 3 decide if live or backtesting
+    if MODE == "live":
+        logging.info(f"Mode LIVE activé — Stratégie : {STRATEGY}")
 
-        choice = input("Live Trading (1) or Backtesting (2)? \n")
+        if STRATEGY == "sma":
+            trader = SMALive(CFG, INSTRUMENT, GRANULARITY, SMAS, SMAL, UNITS,
+                             stop_loss=STOP_LOSS, stop_profit=STOP_PROFIT)
 
-        while choice not in ["1", "2"]:
-            choice = input("Please choose between \"1\" or \"2\": \n")
+        elif STRATEGY == "bollinger_bands":
+            trader = BollingerBandsLive(CFG, INSTRUMENT, GRANULARITY, SMA, DEVIATION,
+                                        stop_profit=STOP_PROFIT)
 
-        # step 4, depending on decision, showcase available strategies
+        elif STRATEGY == "momentum":
+            trader = MomentumLive(CFG, INSTRUMENT, GRANULARITY, WINDOW, UNITS,
+                                  stop_loss=STOP_LOSS, stop_profit=STOP_PROFIT)
 
-        if choice == "1":
-            live_strategies = ["sma", "bollinger_bands", "contrarian", "momentum", "ml_classification"]
+        elif STRATEGY == "contrarian":
+            trader = ContrarianLive(CFG, INSTRUMENT, GRANULARITY, WINDOW, UNITS,
+                                    stop_loss=STOP_LOSS, stop_profit=STOP_PROFIT)
 
-            print("Please choose the strategy you would like to utilize: \n")
+        elif STRATEGY == "ml_classification":
+            trader = MLClassificationLive(CFG, INSTRUMENT, GRANULARITY, LAGS, UNITS,
+                                          stop_loss=STOP_LOSS, stop_profit=STOP_PROFIT)
+        else:
+            raise ValueError(f"Stratégie inconnue : {STRATEGY}")
 
-            for strategy in live_strategies:
-                print(strategy, end=", ")
+    else:
+        logging.info(f"Mode BACKTEST activé — Stratégie : {STRATEGY}")
 
-            choice = input("\n").lower()
+        if STRATEGY == "sma":
+            trader = SMABacktest(INSTRUMENT, START_DATE, END_DATE, SMAS, SMAL, GRANULARITY, TRADING_COST)
 
-            while choice not in live_strategies:
-                choice = input("Please choose a strategy listed above. \n").lower()
+        elif STRATEGY == "bollinger_bands":
+            trader = BollingerBandsBacktest(INSTRUMENT, START_DATE, END_DATE, SMA, DEVIATION, GRANULARITY, TRADING_COST)
 
-            strategy = choice
+        elif STRATEGY == "momentum":
+            trader = MomentumBacktest(INSTRUMENT, START_DATE, END_DATE, WINDOW, GRANULARITY, TRADING_COST)
 
-            print("Please enter the granularity for your session (NOT from list in README, try \"1hr\", \"1m\", \"30s\" (less strict): \n")
+        elif STRATEGY == "contrarian":
+            trader = ContrarianBacktest(INSTRUMENT, START_DATE, END_DATE, WINDOW, GRANULARITY, TRADING_COST)
 
-            granularity = input("")
-
-            print("Please enter the number of units you'd like to trade with (integer, IE 200000 units): \n")
-
-            units = int(input(""))
-
-            print("Enter stop profit dollars to halt trading at (float, IE 25, 15.34, etc)  (enter \"n\" if not applicable): \n")
-
-            # TODO: Enable stop datetime
-
-            stop_profit = input("")
-
-            if stop_profit == "n":
-                stop_profit = None
-            else:
-                stop_profit = float(stop_profit)
-
-            print("Enter a negative stop loss to halt trading at (float, IE -25, -1.32, etc) (enter \"n\" if not applicable): \n")
-
-            stop_loss = input("")
-
-            if stop_loss == "n":
-                stop_loss = None
-            else:
-                stop_loss = float(stop_loss)
-
-            ###################################################################################
-            # Strategies
-            ###################################################################################
-
-            if strategy == "sma":
-
-                print("Enter SMAS value (integer, IE 9): \n")
-
-                smas = int(input(""))
-
-                print("Enter SMAL value (integer, IE 20): \n")
-
-                smal = int(input(""))
-
-                while smal < smas:
-                    smal = int(input("SMAL must be larger or equal to SMAS: \n"))
-
-                trader = SMALive(cfg, instrument, granularity, smas, smal, units, stop_loss=stop_loss, stop_profit=stop_profit)
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            elif strategy == "bollinger_bands":
-
-                print("Enter SMA value (integer, IE 9): \n")
-
-                sma = int(input(""))
-
-                print("Enter deviation value (integer, IE 2): \n")
-
-                deviation = int(input(""))
-
-                trader = BollingerBandsLive(cfg, instrument, granularity, sma, deviation,
-                                 stop_profit=stop_profit)
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            elif strategy == "momentum":
-
-                print("Enter window value (integer, IE 3): \n")
-
-                window = int(input(""))
-
-                trader = MomentumLive(cfg, instrument, granularity, window, units, stop_loss=stop_loss,
-                                 stop_profit=stop_profit)
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            elif strategy == "contrarian":
-
-                print("Enter window value (integer, IE 3): \n")
-
-                window = int(input(""))
-
-                trader = ContrarianLive(cfg, instrument, granularity, window, units, stop_loss=stop_loss,
-                                      stop_profit=stop_profit)
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            elif strategy == "ml_classification":
-
-                print("Enter number of lags (integer, IE 6): \n")
-
-                lags = int(input(""))
-
-                trader = MLClassificationLive(cfg, instrument, granularity, lags, units, stop_loss=stop_loss,
-                                 stop_profit=stop_profit)
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            # Après avoir créé le trader, ajuste la position selon la recommandation DeepSeek
-            reco = get_deepseek_recommendation_for_bot()
-            print(f"Recommandation DeepSeek : {reco}")
-            if reco == "buy":
-                # Exemple pour SMA : forcer la position à long
-                if strategy == "sma":
-                    trader._position = 1
-                # Ajoute ici la logique pour les autres stratégies
-            elif reco == "sell":
-                if strategy == "sma":
-                    trader._position = -1
-            elif reco == "hold":
-                if strategy == "sma":
-                    trader._position = 0
+        elif STRATEGY == "ml_classification":
+            trader = MLClassificationBacktest(INSTRUMENT, START_DATE, END_DATE, GRANULARITY, TRADING_COST)
 
         else:
+            raise ValueError(f"Stratégie inconnue : {STRATEGY}")
 
-            backtesting_strategies = ["sma", "bollinger_bands", "contrarian", "momentum", "ml_classification", "ml_regression"]
+    return trader
 
-            print("Please choose the strategy you would like to backtest: \n")
+#############################################
+# FONCTION POUR EXECUTER LE LIVE TRADING
+#############################################
+def run_live(trader):
+    logging.info("Démarrage du Live Trading...")
+    try:
+        while True:
+            reco = get_deepseek_recommendation_for_bot()
+            logging.info(f"Recommandation DeepSeek : {reco}")
 
-            for strategy in backtesting_strategies:
-                print(strategy, end=", ")
+            # Appliquer la recommandation selon la stratégie
+            if reco == "buy":
+                trader._position = 1
+            elif reco == "sell":
+                trader._position = -1
+            else:
+                trader._position = 0
 
-            choice = input("\n").lower()
+            logging.info(f"Position actuelle : {trader._position}")
 
-            while choice not in backtesting_strategies:
-                choice = input("Please choose a strategy listed above. \n").lower()
+            # TODO : exécuter un tick du trader si nécessaire
+            # trader.run_tick() ou trader.update() selon votre implémentation
+            time.sleep(LIVE_INTERVAL)
 
-            strategy = choice
+    except KeyboardInterrupt:
+        logging.info("Arrêt manuel du Live Trading")
+    except Exception as e:
+        logging.error(f"Erreur durant le Live Trading : {e}")
 
-            print("Enter the start date for the backtest (string, in form of \"YYYY-MM-DD\"): \n")
+#############################################
+# FONCTION POUR EXECUTER LE BACKTEST
+#############################################
+def run_backtest(trader):
+    logging.info("Démarrage du Backtest...")
+    try:
+        trader.test()
+        if hasattr(trader, "optimize"):
+            trader.optimize()
+        if hasattr(trader, "plot_results"):
+            trader.plot_results()
+        logging.info("Backtest terminé ✅")
+    except Exception as e:
+        logging.error(f"Erreur durant le Backtest : {e}")
 
-            start = input("")
+#############################################
+# MAIN
+#############################################
+if __name__ == "__main__":
+    try:
+        trader = init_trader()
+        if MODE == "live":
+            run_live(trader)
+        else:
+            run_backtest(trader)
+    except Exception as e:
+        logging.critical(f"Erreur fatale : {e}")
 
-            print("Enter the end date for the backtest (string, in form of \"YYYY-MM-DD\"): \n")
-
-            end = input("")
-
-            while datetime.strptime(start, '%Y-%m-%d') > datetime.strptime(end, '%Y-%m-%d'):
-                end = input("End date must be after start date. \n")
-
-            print("Enter the trading cost to consider: (float, IE 0.0, 0.00007): \n")
-
-            trading_cost = float(input(""))
-
-            print("Please enter the granularity for your session (See list in README, IE \"S30\", \"M1\", \"H1\"): \n")
-
-            granularity = input("")
-
-            if strategy == "sma":
-
-                print("Enter SMAS value (integer, IE 9): \n")
-
-                smas = int(input(""))
-
-                print("Enter SMAL value (integer, IE 20): \n")
-
-                smal = int(input(""))
-
-                while smal < smas:
-                    smal = int(input("SMAL must be larger or equal to SMAS: \n"))
-
-                trader = SMABacktest(instrument, start, end, smas, smal, granularity, trading_cost)
-
-                trader.test()
-                trader.optimize()
-                trader.plot_results()
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            elif strategy == "bollinger_bands":
-
-                print("Enter SMA value (integer, IE 9): \n")
-
-                sma = int(input(""))
-
-                print("Enter deviation value (integer, IE 2): \n")
-
-                deviation = int(input(""))
-
-                trader = BollingerBandsBacktest(instrument, start, end, sma, deviation, granularity, trading_cost)
-
-                trader.test()
-                trader.optimize()
-                trader.plot_results()
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            elif strategy == "momentum":
-
-                print("Enter window value (integer, IE 3): \n")
-
-                window = int(input(""))
-
-                trader = MomentumBacktest(instrument, start, end, window, granularity, trading_cost)
-
-                trader.test()
-                trader.optimize()
-                trader.plot_results()
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            elif strategy == "contrarian":
-
-                print("Enter window value (integer, IE 3): \n")
-
-                window = int(input(""))
-
-                trader = ContrarianBacktest(instrument, start, end, window, granularity, trading_cost)
-
-                trader.test()
-                trader.optimize()
-                trader.plot_results()
-
-                # TODO: Post trading analysis, maybe some graphs etc
-
-            elif strategy == "ml_classification":
-
-                trader = MLClassificationBacktest(instrument, start, end, granularity, trading_cost)
-
-                trader
-                trader.plot_results()
-
-                # TODO: Post trading analysis, maybe some graphs etc
