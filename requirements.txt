@@ -17,5 +17,8 @@ PyYAML==6.0.2
 
 seaborn==0.12.2
 
+fastapi
+uvicorn
+
 
 
