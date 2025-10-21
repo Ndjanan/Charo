@@ -1,2 +1,2 @@
-web: uvicorn smarttrade-backend.main:app --host 0.0.0.0 --port $PORT
+web: uvicorn smarttrade-backend.api:app --host 0.0.0.0 --port $PORT
 
