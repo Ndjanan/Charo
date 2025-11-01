@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from livetrading.MomentumLive import MomentumLive
 from news_sentiment import get_deepseek_recommendation_for_bot
 from pydantic import BaseModel
 from threading import Thread
@@ -144,3 +145,4 @@ def stop_algo():
         algo_runner.stop()
         return {"status": "algo arrêté"}
     return {"status": "aucun algo en cours"}
+
